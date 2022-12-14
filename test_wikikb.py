@@ -6,7 +6,7 @@ from typing import List
 
 import pytest
 import spacy
-from spacy.tokens import Span
+from spacy.tokens import Span, Doc
 
 from src.kb import WikiKB
 from src.extraction import establish_db_connection
@@ -140,22 +140,20 @@ def _kb(_db_path) -> WikiKB:
 
 
 @pytest.fixture
-def _kb_with_lookup_file(_kb, _db_path) -> WikiKB:
+def _kb_with_lookup_file(_kb, _db_path, _doc_with_ents) -> WikiKB:
     """
     Generates WikiKB using a lookup file.
     _kb (WikiKB): KB without lookup file, used to generated lookup file.
     _db_path (_db_path): Path to generated database.
     RETURNS (WikiKB): WikiKB using a lookup file.
     """
-    nlp = spacy.load("en_core_web_sm")
-    doc = nlp("new yorc and Boston")
-    mentions = [doc[:2], doc[3:]]
-    cands = list(next(_kb.get_candidates_all([mentions])))
+    cands = list(next(_kb.get_candidates_all([_doc_with_ents])))
     lookup_path = _db_path.parent / "mention_lookups.pkl"
 
     with open(lookup_path, "wb") as file:
         pickle.dump(
-            {mention.text: cands[i] for i, mention in enumerate(mentions)}, file
+            {mention.text: cands[i] for i, mention in enumerate(_doc_with_ents.ents)},
+            file,
         )
 
     kb = WikiKB(
@@ -169,6 +167,17 @@ def _kb_with_lookup_file(_kb, _db_path) -> WikiKB:
     # Skip embeddings index generation since it already exists (via fixture _kb).
 
     return kb
+
+
+@pytest.fixture
+def _doc_with_ents() -> Doc:
+    """
+    Returns a test Doc instance with defined .ents.
+    RETURNS (Doc): Doc instance with defined .ents.
+    """
+    doc = spacy.load("en_core_web_sm")("new yorc and Boston")
+    doc.ents = [Span(doc, 0, 2, label="Q60"), Span(doc, 3, 4, label="Q100")]
+    return doc
 
 
 def test_initialization(_kb) -> None:
@@ -274,18 +283,17 @@ def _verify_kb_equality(kb1: WikiKB, kb2: WikiKB) -> bool:
 
 
 def _verify_candidate_retrieval_results(
-    kb: WikiKB, mentions: List[Span], target_entity_ids: List[List[str]]
+    kb: WikiKB, doc: Doc, target_entity_ids: List[List[str]]
 ):
     """Assert that retrieved candidates are correct.
     kb (WikiKB): KB to use.
-    mentions (List[Span]): Mentions to resolve.
+    doc (Doc): Doc with .ents to resolve.
     target_entity_ids (List[List[str]]): Expected target entity IDs per mention.
     """
-
     for i, (cands_from_all, cands_from_single) in enumerate(
         zip(
-            next(kb.get_candidates_all([mentions])),
-            [kb.get_candidates(mention) for mention in mentions],
+            next(kb.get_candidates_all([doc])),
+            [kb.get_candidates(mention) for mention in doc.ents],
         )
     ):
         assert len(list(cands_from_all)) == len(list(cands_from_single))
@@ -299,15 +307,12 @@ def _verify_candidate_retrieval_results(
                 assert getattr(cand_all, prop) == getattr(cand_single, prop)
 
 
-def test_get_candidates(_kb) -> None:
-    """Smoke test for get_candidates() and get_candidates_all()."""
-    doc = spacy.load("en_core_web_sm")("new yorc and Boston")
-    _verify_candidate_retrieval_results(
-        _kb, [doc[:2], doc[3:]], [["Q60"], ["Q100", "Q60"]]
-    )
+def test_get_candidates(_kb, _doc_with_ents) -> None:
+    """Smoke test to guarantee equivalency between get_candidates() and get_candidates_all()."""
+    _verify_candidate_retrieval_results(_kb, _doc_with_ents, [["Q60"], ["Q100", "Q60"]])
 
 
-def test_serialized_mention_lookups(_kb_with_lookup_file) -> None:
+def test_serialized_mention_lookups(_kb_with_lookup_file, _doc_with_ents) -> None:
     """Tests serialized mention lookups."""
     # Monkeypatch candidate search methods to make sure we don't use them.
     def _raise(_) -> None:
@@ -316,7 +321,6 @@ def test_serialized_mention_lookups(_kb_with_lookup_file) -> None:
     _kb_with_lookup_file._fetch_candidates_by_alias = _raise
 
     # Test lookup works correctly.
-    doc = spacy.load("en_core_web_sm")("new yorc and Boston")
     _verify_candidate_retrieval_results(
-        _kb_with_lookup_file, [doc[:2], doc[3:]], [["Q60"], ["Q100", "Q60"]]
+        _kb_with_lookup_file, _doc_with_ents, [["Q60"], ["Q100", "Q60"]]
     )

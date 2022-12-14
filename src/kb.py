@@ -30,7 +30,7 @@ import wasabi
 from spacy import Vocab, Language
 from spacy.kb import KnowledgeBase
 from spacy.kb.candidate import BaseCandidate
-from spacy.tokens import Span
+from spacy.tokens import Span, Doc
 from spacy.util import SimpleFrozenList
 
 
@@ -260,31 +260,32 @@ class WikiKB(KnowledgeBase):
         logger.info("Building ANN index.")
         self._annoy.build(n_trees=self._n_trees, n_jobs=n_jobs)
 
-    def get_candidates_all(
-        self, mentions: Iterator[Iterable[Span]]
-    ) -> Iterator[_DocCandidates]:
+    def get_candidates_all(self, docs: Iterator[Doc]) -> Iterator[_DocCandidates]:
         """
-        Retrieve candidate entities for specified mentions per document. If no candidate is found for a given mention,
-        an empty list is returned. Uses mention-candidate lookup, if available.
+        Retrieve candidate entities for mentions in the specified documents. If no candidate is found for a given
+        mention, an empty list is returned. Uses mention-candidate lookup, if available.
         mentions (Iterator[Iterable[Span]]): Mentions per documents for which to get candidates.
+
         YIELDS (Iterator[_DocCandidates]): Identified candidates per document.
         """
-        for mentions_in_doc in mentions:
+        # coref_nlp = spacy.load("en_coreference_web_trf") if self._use_coref else None
+
+        for doc in docs:
             # If mention-candidate lookup is available: look up candidates for mentions there.
             if self._mentions_candidates:
-                yield [
-                    self._mentions_candidates[mention.text]
-                    for mention in mentions_in_doc
-                ]
+                yield [self._mentions_candidates[mention.text] for mention in doc.ents]
             # Otherwise: search for fitting candidates in DB.
             else:
-                mentions_in_doc = tuple(mentions_in_doc)
-                alias_matches = self._fetch_candidates_by_alias(mentions_in_doc)
-                fts_matches = self._fetch_candidates_by_fts(mentions_in_doc)
+                # todo if use_coref: do coref clustering here. including resolution of entity mismatch.
+                #   1. do coref clustering, entity matching
+                #   2. reduce mentions_in_doc to one mention per cluster
+                #   3. copy (with adjusted mention) WikiKB candidates for other mentions in cluster
+                alias_matches = self._fetch_candidates_by_alias(doc.ents)
+                fts_matches = self._fetch_candidates_by_fts(doc.ents)
                 # Candidates for each mention per document.
                 candidates_per_mention: List[List[WikiKBCandidate]] = []
 
-                for i, mention in enumerate(mentions_in_doc):
+                for i, mention in enumerate(doc.ents):
                     candidates_per_mention.append([])
                     appended_entity_ids: Set[str] = set()
 
@@ -327,7 +328,20 @@ class WikiKB(KnowledgeBase):
         mention (Span): Mention for which to get candidates.
         RETURNS (Iterable[Candidate]): Identified candidates.
         """
-        return next(iter(next(self.get_candidates_all([[mention]]))))
+        # Create doc with only this mention in it. This is a workaround - get_candidates() will be tossed in v4 anyway.
+        doc = mention.doc.copy()
+        doc.ents = [
+            Span(
+                doc,
+                mention.start,
+                mention.end,
+                mention.label,
+                mention.vector,
+                mention.vector_norm,
+                mention.kb_id,
+            )
+        ]
+        return next(iter(next(self.get_candidates_all([doc]))))
 
     def _get_vectors(self, rowids: Iterable[int]) -> Iterable[Iterable[float]]:
         """
@@ -610,7 +624,9 @@ class WikiKB(KnowledgeBase):
             self._use_coref,
         )
 
-    def _set_attributes_for_serialization(self, values: Tuple[Any, ...]) -> None:
+    def _set_attributes_for_serialization(
+        self, values: Union[Tuple[Any, ...], List[Any]]
+    ) -> None:
         """Returns all attributes as Tuple fit for serialization with both to_bytes() and to_disk().
         value (Tuple[Any, ...]): Tuple with attributes to to set.
         """
