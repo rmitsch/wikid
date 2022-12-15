@@ -38,11 +38,23 @@ def _db_path() -> Path:
         INSERT INTO entities_texts (entity_id, name, description, label) VALUES
             ('Q60', 'New York City', 'most populous city in the United States', 'New York City'),
             ('Q100', 'Boston', 'capital and largest city of Massachusetts, United States', 'Boston'),
-            ('Q597', 'Lisbon', 'capital city of Portugal', 'Lisbon');
+            ('Q597', 'Lisbon', 'capital city of Portugal', 'Lisbon'),
+            (
+                'Q131371', 'Boston Celtics', 'NBA team based in Boston; tied with most NBA Championships',
+                'Boston Celtics'
+            ),
+            (
+                'Q131364', 'New York Knicks', 'National Basketball Association franchise in New York City',
+                'New York Knicks'
+            );
         """
     )
     cursor.execute(
-        "INSERT INTO articles (entity_id, id) VALUES (60, 0), (100, 1), (597, 2);"
+        """
+        INSERT INTO articles (entity_id, id) VALUES
+            ('Q60', 0), ('Q100', 1), ('Q597', 2), ('Q131371', 3), ('Q131364', 4)
+        ;
+        """
     )
     cursor.execute(
         """
@@ -73,10 +85,33 @@ def _db_path() -> Path:
                 around 2.7 million people, being the 11th-most populous urban area in the European Union. About 3
                 million people live in the Lisbon metropolitan area, making it the third largest metropolitan area in
                 the Iberian Peninsula, after Madrid and Barcelona.'
+            ),
+            (
+                'Q131371',
+                'Boston Celtics',
+                'The Boston Celtics (/ˈsɛltɪks/ SEL-tiks) are an American professional basketball team based in Boston.
+                The Celtics compete in the National Basketball Association (NBA) as a member of the league''s Eastern
+                Conference Atlantic Division. Founded in 1946 as one of the league''s original eight teams, the Celtics
+                play their home games at TD Garden, which they share with the National Hockey League''s Boston Bruins.
+                The Celtics are one of the most successful basketball teams in NBA history. The franchise is one of two
+                teams with 17 NBA Championships, the other franchise being the Los Angeles Lakers. The Celtics currently
+                hold the record for the most recorded wins of any NBA team.'
+            ),
+            (
+                'Q131364',
+                'New York Knicks',
+                'The New York Knickerbockers, shortened and more commonly referred to as the New York Knicks, are an
+                American professional basketball team based in the New York City borough of Manhattan. The Knicks
+                compete in the National Basketball Association (NBA) as a member of the Atlantic Division of the Eastern
+                Conference. The team plays its home games at Madison Square Garden, an arena they share with the New
+                York Rangers of the National Hockey League (NHL). They are one of two NBA teams located in New York
+                City; the other team is the Brooklyn Nets. Alongside the Boston Celtics, the Knicks are one of two
+                original NBA teams still located in its original city.'
             )
         ;
         """
     )
+
     cursor.execute(
         """
         INSERT INTO aliases_for_entities (alias, entity_id, count, prior_prob) VALUES
@@ -108,9 +143,19 @@ def _db_path() -> Path:
             ('Boston, Massachusetts', 'Q100', 1, 0.01),
             ('Boston, Mass.', 'Q100', 1, 0.01),
             ('Puritan City', 'Q100', 1, 0.01),
-
             ('Lisbon', 'Q597', 1, 0.01),
-            ('Lisboa', 'Q597', 1, 0.01);
+            ('Lisboa', 'Q597', 1, 0.01),
+            ('Boston Celtics', 'Q131371', 1, 0.01),
+            ('Celtics', 'Q131371', 1, 0.01),
+            ('Celts', 'Q131371', 1, 0.01),
+            ('C''s', 'Q131371', 1, 0.01),
+            ('Green and White', 'Q131371', 1, 0.01),
+            ('New York Knicks', 'Q131364', 1, 0.01),
+            ('New York Knickerbockers', 'Q131364', 1, 0.01),
+            ('Knicks', 'Q131364', 1, 0.01),
+            ('NYK', 'Q131364', 1, 0.01),
+            ('Minutemen', 'Q131364', 1, 0.01)
+            ;
         """
     )
     cursor.execute(
@@ -133,6 +178,7 @@ def _kb(_db_path) -> WikiKB:
         _db_path,
         _db_path.parent / "wiki.annoy",
         "en",
+        use_coref=True,
     )
     kb.build_embeddings_index(nlp, n_jobs=1)
 
@@ -176,7 +222,10 @@ def _doc_with_ents() -> Doc:
     RETURNS (Doc): Doc instance with defined .ents.
     """
     doc = spacy.load("en_core_web_sm")("new yorc and Boston")
-    doc.ents = [Span(doc, 0, 2, label="Q60"), Span(doc, 3, 4, label="Q100")]
+    doc.ents = [
+        Span(doc, 0, 2, kb_id="Q60", label="NIL"),
+        Span(doc, 3, 4, kb_id="Q100", label="NIL"),
+    ]
     return doc
 
 
@@ -324,3 +373,21 @@ def test_serialized_mention_lookups(_kb_with_lookup_file, _doc_with_ents) -> Non
     _verify_candidate_retrieval_results(
         _kb_with_lookup_file, _doc_with_ents, [["Q60"], ["Q100", "Q60"]]
     )
+
+
+def test_coref(_kb):
+    doc = spacy.load("en_core_web_sm")(
+        "The Boston Celtics played against the New York Knicks today. Boston beat New York by 5 points. The game took "
+        "place in New York instead of in Boston."
+    )
+    doc.ents = [
+        Span(doc, 1, 3, kb_id="Q131364", label="NIL"),  # Boston Celtics
+        Span(doc, 6, 9, kb_id="Q131371", label="NIL"),  # New York Knicks
+        Span(doc, 11, 12, kb_id="Q131371", label="NIL"),  # Boston
+        Span(doc, 13, 15, kb_id="Q60", label="NIL"),  # New York,
+        Span(doc, 24, 26, kb_id="Q131371", label="NIL"),  # New York
+        Span(doc, 29, 30, kb_id="Q60", label="NIL"),  # Boston
+    ]
+
+    for i, cands in enumerate(next(_kb.get_candidates_all([doc.ents_spangroup]))):
+        pass

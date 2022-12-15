@@ -30,7 +30,7 @@ import wasabi
 from spacy import Vocab, Language
 from spacy.kb import KnowledgeBase
 from spacy.kb.candidate import BaseCandidate
-from spacy.tokens import Span, Doc
+from spacy.tokens import Span, SpanGroup
 from spacy.util import SimpleFrozenList
 
 
@@ -260,32 +260,53 @@ class WikiKB(KnowledgeBase):
         logger.info("Building ANN index.")
         self._annoy.build(n_trees=self._n_trees, n_jobs=n_jobs)
 
-    def get_candidates_all(self, docs: Iterator[Doc]) -> Iterator[_DocCandidates]:
+    def get_candidates_all(
+        self, span_groups: Iterator[SpanGroup]
+    ) -> Iterator[_DocCandidates]:
         """
         Retrieve candidate entities for mentions in the specified documents. If no candidate is found for a given
         mention, an empty list is returned. Uses mention-candidate lookup, if available.
-        mentions (Iterator[Iterable[Span]]): Mentions per documents for which to get candidates.
+        mentions (Iterator[SpanGroup]): Mentions per documents for which to get candidates.
 
         YIELDS (Iterator[_DocCandidates]): Identified candidates per document.
         """
-        # coref_nlp = spacy.load("en_coreference_web_trf") if self._use_coref else None
+        coref_nlp = spacy.load("en_coreference_web_trf") if self._use_coref else None
 
-        for doc in docs:
+        for span_group in span_groups:
             # If mention-candidate lookup is available: look up candidates for mentions there.
             if self._mentions_candidates:
-                yield [self._mentions_candidates[mention.text] for mention in doc.ents]
+                yield [
+                    self._mentions_candidates[mention.text]
+                    for mention in span_group.ents
+                ]
             # Otherwise: search for fitting candidates in DB.
             else:
                 # todo if use_coref: do coref clustering here. including resolution of entity mismatch.
                 #   1. do coref clustering, entity matching
                 #   2. reduce mentions_in_doc to one mention per cluster
                 #   3. copy (with adjusted mention) WikiKB candidates for other mentions in cluster
-                alias_matches = self._fetch_candidates_by_alias(doc.ents)
-                fts_matches = self._fetch_candidates_by_fts(doc.ents)
+                ent_mentions = [span_group[i] for i in range(len(span_group))]
+
+                if self._use_coref:
+                    coref_map: Dict[str, str] = {}
+                    coref_doc = coref_nlp(ent_mentions[0].doc.text)
+                    # todo entity matching
+                    for cluster in [
+                        val
+                        for key, val in coref_doc.spans.items()
+                        if key.startswith("coref_cluster")
+                    ]:
+                        for i in range(1, len(cluster)):
+                            coref_map[cluster[i].text] = cluster[0].text
+                    # todo reduce mentions_in_doc to one mention per cluster
+                    # todo after lookup: rehydrate mentions_in_doc
+
+                alias_matches = self._fetch_candidates_by_alias(span_group.ents)
+                fts_matches = self._fetch_candidates_by_fts(span_group.ents)
                 # Candidates for each mention per document.
                 candidates_per_mention: List[List[WikiKBCandidate]] = []
 
-                for i, mention in enumerate(doc.ents):
+                for i, mention in enumerate(span_group.ents):
                     candidates_per_mention.append([])
                     appended_entity_ids: Set[str] = set()
 
